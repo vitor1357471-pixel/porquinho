@@ -17,7 +17,7 @@ const COLORS = ['#B83A62', '#F2C14E', '#1F7A55', '#3B1F2B', '#F4A6B7', '#6B4A57'
 const KEY = 'porquinho:v1';
 const PASTEL = ['#FBD9E1', '#FCEBB8', '#CFEBDD', '#D9CDD1', '#FFE6EC', '#E6DCE0'];
 const big = n => { const [i, c] = Math.abs(n).toFixed(2).split('.'); return `${n < 0 ? '−' : ''}<small>R$</small>${Number(i).toLocaleString('pt-BR')}<small>,${c}</small>`; };
-let drop = true, off = 0;
+let drop = true, off = 0, sub = null, admin = false, ADM = null, pix = null;
 const cats = () => [...CATS, ...S.cats];
 const THEMES = { rosa: ['Rosa', '#B83A62', '#FFF6F0'], escuro: ['Escuro', '#D9507A', '#1D1419'], oceano: ['Oceano', '#1E6FA8', '#EEF6FB'], floresta: ['Floresta', '#2F7D4F', '#F0F7F1'], lavanda: ['Lavanda', '#7A4FC2', '#F5F1FB'] };
 let theme = 'rosa';
@@ -187,6 +187,35 @@ const vMetas = () => `
   <div><h1>Metas</h1><span class="m">Cofrinhos para os seus sonhos</span></div>
   ${S.goals.map(g => { const p = g.target ? Math.min(100, g.saved / g.target * 100) : 0; return `<div class="c col"><div class="r"><div><div class="b">${esc(g.name)}</div><div class="m">${brl(g.saved)} de ${brl(g.target)} · ${Math.round(p)}%</div></div><div class="rt"><button class="paid" data-act="gdep" data-id="${g.id}">Guardar</button>${delBtn('goals', g.id, g.name)}</div></div><div class="t"><i style="width:${p}%"></i></div></div>`; }).join('') || '<div class="empty">Nenhuma meta ainda. Crie a primeira abaixo.</div>'}
   <details class="c add" open><summary>Nova meta</summary><form data-f="goal"><label for="g1">Nome</label><input id="g1" class="in" name="n" placeholder="Viagem" required><label for="g2">Valor da meta</label><input id="g2" class="in" name="v" inputmode="decimal" placeholder="5.000,00" required><button class="pb">Criar meta</button></form></details>`;
+const PLANOS = { mensal: ['Mensal', 14.9, 1], semestral: ['Semestral', 71.4, 6], anual: ['Anual', 106.8, 12] };
+const hasAccess = () => admin || (sub && sub.ate > Date.now()) || (user.metadata && Date.parse(user.metadata.creationTime) + 7 * 864e5 > Date.now());
+const vPlanos = () => pix && pix !== 'load' ? `
+  <div class="auth"><div class="c col" style="align-items:center;text-align:center"><h1>Pague com Pix</h1><span class="m">Abra o app do seu banco, escolha Pix e leia o QR Code.</span>
+  <img src="data:image/png;base64,${pix.b64}" alt="QR Code do Pix" width="220" height="220"><button class="pb" data-act="copy">Copiar código Pix</button>
+  <span class="m">Aguardando o pagamento. A tela atualiza sozinha.</span><button class="lnk" data-act="cancelpix">Escolher outro plano</button></div></div>` : `
+  <div class="auth"><div class="pig" style="padding:22px"><h1>Continue com o seu porquinho</h1><p class="m">Seu período de acesso terminou. Escolha um plano e pague com Pix.</p></div>
+  ${Object.entries(PLANOS).map(([k, [n, p, m]]) => `<div class="c r"><div><div class="b">${n}</div><div class="m">${brl(p / m)}/mês${m > 1 ? ' · ' + brl(p) + ' a cada ' + m + ' meses' : ''}</div></div><button class="paid" data-act="buy" data-t="${k}" ${pix === 'load' ? 'disabled' : ''}>Pagar com Pix</button></div>`).join('')}
+  <button class="lnk" data-act="logout">Sair da conta</button></div>`;
+async function buy(plano) {
+  pix = 'load'; render();
+  try {
+    const r = await fetch('/api/criar-pix', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await user.getIdToken() }, body: JSON.stringify({ plano }) });
+    const j = await r.json();
+    if (!j.qr) throw new Error('pix');
+    pix = j; render();
+    clearInterval(buy.t);
+    buy.t = setInterval(async () => {
+      try {
+        const s = (await fb.get(fb.ref(fb.db, `subscriptions/${user.uid}`))).val();
+        if (s && s.ate > Date.now()) { sub = s; pix = null; clearInterval(buy.t); render(); say('Pagamento confirmado! Obrigado.'); }
+      } catch (e) { /* tenta de novo */ }
+    }, 5000);
+  } catch (e) { pix = null; render(); say('Não foi possível gerar o Pix. Tente de novo.'); }
+}
+const vAdmin = () => `
+  <div><h1>Administrador</h1><span class="m">Assinaturas pagas via Pix</span></div>
+  <div style="display:flex;gap:10px">${tile('Receita mensal', ADM.mrr, 'pos')}<div class="c" style="flex:1;padding:12px 14px;border-radius:18px"><div class="m">Assinantes ativos</div><div class="b" style="font-size:19px;font-weight:800">${ADM.ativos}</div></div></div>
+  <section class="col"><h2>Assinantes</h2>${ADM.lista.map(s => `<div class="c r row"><div><div class="b">${esc(s.email || 'Sem e-mail')}</div><div class="m">${esc(PLANOS[s.plano] ? PLANOS[s.plano][0] : s.plano)} · até ${new Date(s.ate).toLocaleDateString('pt-BR')}</div></div><span class="chip ${s.ate > Date.now() ? '' : 'warn'}">${s.ate > Date.now() ? 'Ativo' : 'Vencido'}</span></div>`).join('') || '<div class="empty">Nenhum assinante ainda.</div>'}</section>`;
 const fld = (id, l, n, type, ph, ac) => `<label for="${id}">${l}</label><input id="${id}" class="in" name="${n}" type="${type}" placeholder="${ph}" autocomplete="${ac}" required${n === 'p' ? ' minlength="6"' : ''}>`;
 const vAuth = () => `
   <section class="auth"><div class="pig">${pig(false, 0.6, true)}<h1>Porquinho Financeiro</h1><p class="m">Anote o que você gasta e veja quanto ainda pode gastar. Sua conta guarda tudo, em qualquer aparelho.</p></div>
@@ -213,10 +242,12 @@ const vConta = () => `
 
 function render() {
   $('#nav').hidden = CLOUD && !user;
+  $('#admbtn').hidden = !admin;
   if (CLOUD && !user) { $('#app').className = 'narrow'; $('#app').innerHTML = !fb ? '<div class="empty">Carregando…</div>' : vAuth(); return; }
+  if (CLOUD && user && !hasAccess()) { $('#nav').hidden = true; $('#app').className = 'narrow'; $('#app').innerHTML = vPlanos(); return; }
   const c = calc();
   $('#app').className = tab === 'inicio' ? '' : 'narrow';
-  $('#app').innerHTML = tab === 'inicio' ? vInicio(c) : tab === 'mes' ? vMes(calc(off)) : tab === 'metas' ? vMetas() : tab === 'conta' ? vConta() : vContas(c);
+  $('#app').innerHTML = tab === 'inicio' ? vInicio(c) : tab === 'admin' && admin ? vAdmin() : tab === 'mes' ? vMes(calc(off)) : tab === 'metas' ? vMetas() : tab === 'conta' ? vConta() : vContas(c);
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
 }
 
@@ -226,6 +257,9 @@ document.addEventListener('click', e => {
   const { act, k, id, t } = b.dataset;
   if (act === 'tab') { tab = t; window.scrollTo(0, 0); }
   else if (act === 'am') authMode = t;
+  else if (act === 'buy') { buy(t); return; }
+  else if (act === 'copy') { navigator.clipboard.writeText(pix.qr).then(() => say('Código Pix copiado.')); return; }
+  else if (act === 'cancelpix') { pix = null; clearInterval(buy.t); }
   else if (act === 'moff') off = Math.min(0, off + Number(t));
   else if (act === 'theme') setTheme(t);
   else if (act === 'delcat') {
@@ -310,6 +344,14 @@ async function boot() {
       try { S = norm((await fb.get(fb.ref(fb.db, `users/${u.uid}`))).val()); status = 'Salvo na nuvem'; }
       catch (e) { S = blank(); status = 'Sem conexão com o banco'; }
     } else S = blank();
+    sub = null; admin = false; ADM = null; pix = null;
+    if (u) {
+      try { sub = (await fb.get(fb.ref(fb.db, `subscriptions/${u.uid}`))).val(); } catch (e) { /* sem assinatura */ }
+      try {
+        const r = await fetch('/api/admin', { headers: { Authorization: 'Bearer ' + await u.getIdToken() } });
+        if (r.ok) { ADM = await r.json(); admin = true; }
+      } catch (e) { /* não é admin */ }
+    }
     render();
   });
 }

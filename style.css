@@ -93,3 +93,4 @@ nav button{flex-direction:column;gap:2px;font-size:11px;min-height:54px;border-r
 .sw{display:inline-block;width:14px;height:14px;border-radius:50%;margin-right:6px;vertical-align:-2px}
 .mn{display:flex;align-items:center;justify-content:space-between}
 .mn .lnk{text-decoration:none;font-size:26px;min-width:44px}
+nav button[hidden]{display:none}
