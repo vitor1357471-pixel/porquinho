@@ -17,14 +17,25 @@ const COLORS = ['#B83A62', '#F2C14E', '#1F7A55', '#3B1F2B', '#F4A6B7', '#6B4A57'
 const KEY = 'porquinho:v1';
 const PASTEL = ['#FBD9E1', '#FCEBB8', '#CFEBDD', '#D9CDD1', '#FFE6EC', '#E6DCE0'];
 const big = n => { const [i, c] = Math.abs(n).toFixed(2).split('.'); return `${n < 0 ? '−' : ''}<small>R$</small>${Number(i).toLocaleString('pt-BR')}<small>,${c}</small>`; };
-let drop = true;
+let drop = true, off = 0;
+const cats = () => [...CATS, ...S.cats];
+const THEMES = { rosa: ['Rosa', '#B83A62', '#FFF6F0'], escuro: ['Escuro', '#D9507A', '#1D1419'], oceano: ['Oceano', '#1E6FA8', '#EEF6FB'], floresta: ['Floresta', '#2F7D4F', '#F0F7F1'], lavanda: ['Lavanda', '#7A4FC2', '#F5F1FB'] };
+let theme = 'rosa';
+try { theme = localStorage.getItem('porquinho:theme') || 'rosa'; } catch (e) { /* ok */ }
+if (!THEMES[theme]) theme = 'rosa';
+const setTheme = t => {
+  theme = t; document.documentElement.dataset.theme = t;
+  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = THEMES[t][2];
+  try { localStorage.setItem('porquinho:theme', t); } catch (e) { /* ok */ }
+};
+setTheme(theme);
 
 const CLOUD = !String(firebaseConfig.apiKey).startsWith('COLE');
-const blank = () => ({ incomes: [], fixed: [], inst: [], exp: [] });
+const blank = () => ({ incomes: [], fixed: [], inst: [], exp: [], goals: [], cats: [], budgets: [] });
 const norm = v => {
   const L = x => Array.isArray(x) ? x : Object.values(x || {});
   const o = { ...blank(), ...(v || {}) };
-  ['incomes', 'fixed', 'inst', 'exp'].forEach(k => { o[k] = L(o[k]); });
+  ['incomes', 'fixed', 'inst', 'exp', 'goals', 'cats', 'budgets'].forEach(k => { o[k] = L(o[k]); });
   o.fixed.forEach(f => { f.paid = f.paid || {}; });
   o.inst.forEach(i => { i.paid = i.paid || {}; });
   return o;
@@ -49,8 +60,8 @@ const AUTH = {
 
 let tab = 'inicio';
 
-function calc() {
-  const now = new Date(), m = mkey(now), today = dkey(now);
+function calc(o = 0) {
+  const t0 = new Date(), now = o ? new Date(t0.getFullYear(), t0.getMonth() + o, 1) : t0, m = mkey(now), today = dkey(now);
   const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const left = dim - now.getDate() + 1;
   const income = sum(S.incomes, x => x.value);
@@ -111,8 +122,9 @@ function vInicio(c) {
   ${c.pend > 0 ? `<div class="c r"><div><div class="b">Contas e parcelas a vencer</div><div class="m">Livre depois delas: ${brl(c.livre)}</div></div><div class="rt"><strong class="neg">${brl(c.pend)}</strong><br><button class="lnk" data-act="tab" data-t="contas">Ver todas</button></div></div>` : ''}
   ${S.incomes.length ? '' : '<div class="c step"><h2>Primeiro passo</h2><p class="m" style="margin:4px 0 12px">Diga quanto você recebe por mês para o porquinho começar a contar.</p><button class="pb" data-act="tab" data-t="contas">Cadastrar o que recebo</button></div>'}
   <form class="c" data-f="exp"><h2>Lançar gasto</h2>
-    <div class="two"><div><label for="ev">Valor</label><input id="ev" class="in" name="v" inputmode="decimal" placeholder="32,50" required></div><div><label for="ec">Categoria</label><select id="ec" class="in" name="c">${CATS.map(x => `<option>${x}</option>`).join('')}</select></div></div>
+    <div class="two"><div><label for="ev">Valor</label><input id="ev" class="in" name="v" inputmode="decimal" placeholder="32,50" required></div><div><label for="ec">Categoria</label><select id="ec" class="in" name="c">${cats().map(x => `<option>${x}</option>`).join('')}</select></div></div>
     <label for="ed">O que foi?</label><input id="ed" class="in" name="d" placeholder="Ex.: Almoço">
+    <label for="edt">Data</label><input id="edt" class="in" type="date" name="dt" value="${dkey(new Date())}" max="${dkey(new Date())}">
     <button class="pb">Lançar gasto</button>
   </form>
   </div><div class="main">
@@ -125,19 +137,26 @@ function vInicio(c) {
 }
 
 function vMes(c) {
-  const sl = [...CATS.map(n => ({ n, v: sum(c.mexp.filter(e => e.cat === n), e => e.value) })), { n: 'Contas fixas', v: c.fixPaid }, { n: 'Parcelas', v: c.insPaid }].filter(x => x.v > 0);
+  const sl = [...cats().map(n => ({ n, v: sum(c.mexp.filter(e => e.cat === n), e => e.value) })), { n: 'Contas fixas', v: c.fixPaid }, { n: 'Parcelas', v: c.insPaid }].filter(x => x.v > 0);
   const total = sum(sl, x => x.v), C = 2 * Math.PI * 54;
   let acc = 0;
   const arcs = sl.map((x, i) => { const len = x.v / total * C; const s = `<circle cx="70" cy="70" r="54" stroke="${COLORS[i % 8]}" stroke-dasharray="${len} ${C}" stroke-dashoffset="${-acc}"/>`; acc += len; return s; }).join('');
   const pct = c.income ? Math.round(c.spent / c.income * 100) : 0;
   return `
-  <div><h1>Resumo do mês</h1></div>
+  <div class="mn"><button class="lnk" data-act="moff" data-t="-1" aria-label="Mês anterior">‹</button><h1 style="text-transform:capitalize">${c.now.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</h1><button class="lnk" data-act="moff" data-t="1" aria-label="Próximo mês" ${off >= 0 ? 'disabled style="opacity:.3"' : ''}>›</button></div>
   <div style="display:flex;gap:10px">${tile('Recebi', c.income, 'pos')}${tile('Gastei', c.spent, 'neg')}${tile('Sobrou', c.sobrou)}</div>
   <section class="c col" style="gap:10px"><h2>Para onde foi o dinheiro</h2>
-    ${total ? `<svg role="img" aria-label="Gastos por categoria" width="160" viewBox="0 0 140 140" style="align-self:center"><g fill="none" stroke-width="22" transform="rotate(-90 70 70)">${arcs}</g><text x="70" y="74" font-size="26" font-weight="800" text-anchor="middle" fill="#3B1F2B">${pct}%</text><text x="70" y="92" font-size="11" text-anchor="middle" fill="#6B4A57">do recebido</text></svg>
+    ${total ? `<svg role="img" aria-label="Gastos por categoria" width="160" viewBox="0 0 140 140" style="align-self:center"><g fill="none" stroke-width="22" transform="rotate(-90 70 70)">${arcs}</g><text x="70" y="74" font-size="26" font-weight="800" text-anchor="middle" style="fill:var(--ink)">${pct}%</text><text x="70" y="92" font-size="11" text-anchor="middle" style="fill:var(--mu)">do recebido</text></svg>
     ${sl.map((x, i) => `<div class="r b leg" style="font-size:15px"><span><i style="background:${COLORS[i % 8]}"></i>${x.n}</span><span>${brl(x.v)}</span></div>`).join('')}` : '<div class="empty">Sem gastos neste mês ainda.</div>'}
   </section>
-  <div class="dark col"><div class="r"><span class="b">Contas a vencer</span><strong>${brl(c.pend)}</strong></div><div class="m" style="color:#F4A6B7">Livre depois das contas: ${brl(c.livre)}</div></div>`;
+  <div class="dark col"><div class="r"><span class="b">Contas a vencer</span><strong>${brl(c.pend)}</strong></div><div class="m" style="color:var(--ac2)">Livre depois das contas: ${brl(c.livre)}</div></div>
+  <section class="col"><h2>Orçamento por categoria</h2>
+    ${S.budgets.map(b => { const sp = sum(c.mexp.filter(e => e.cat === b.cat), e => e.value), p = b.value ? sp / b.value * 100 : 0; return `<div class="c col"><div class="r"><div><div class="b">${esc(b.cat)}</div><div class="m ${sp > b.value ? 'neg b' : ''}">${brl(sp)} de ${brl(b.value)}${sp > b.value ? ' · passou!' : ''}</div></div>${delBtn('budgets', b.id, b.cat)}</div><div class="t"><i style="width:${Math.min(100, p)}%;${sp > b.value ? 'background:#C0392B' : ''}"></i></div></div>`; }).join('') || '<div class="empty">Defina quanto quer gastar por categoria.</div>'}
+    <details class="c add"><summary>Definir orçamento</summary><form data-f="bud"><label for="bc">Categoria</label><select id="bc" class="in" name="c">${cats().map(x => `<option>${esc(x)}</option>`).join('')}</select><label for="bv">Limite por mês</label><input id="bv" class="in" name="v" inputmode="decimal" placeholder="600,00" required><button class="pb">Salvar orçamento</button></form></details>
+  </section>
+  <section class="col"><h2>Lançamentos do mês</h2>
+    ${[...c.mexp].sort((x, y) => y.date.localeCompare(x.date)).map(e => `<div class="c r row"><span class="av" style="background:${PASTEL[Math.max(0, CATS.indexOf(e.cat))]}">${esc(e.cat[0])}</span><div style="flex:1"><div class="b">${esc(e.desc)}</div><div class="m">${esc(e.cat)} · ${e.date.split('-').reverse().slice(0, 2).join('/')}</div></div><div class="rt"><strong>${brl(e.value)}</strong>${delBtn('exp', e.id, e.desc)}</div></div>`).join('') || '<div class="empty">Nenhum lançamento neste mês.</div>'}
+  </section>`;
 }
 
 function vContas(c) {
@@ -146,7 +165,7 @@ function vContas(c) {
   const dueSoon = f => !f.isPaid && f.day >= c.now.getDate() && f.day - c.now.getDate() <= 5;
   return `
   <div><h1>Contas</h1><span class="m">Entradas, gastos fixos e parcelas</span></div>
-  <div class="c" style="background:#B83A62;color:#fff;border-radius:26px"><div class="b" style="font-size:14px">Entra por mês</div><div class="big">${big(c.income)}</div></div>
+  <div class="c" style="background:var(--ac);color:#fff;border-radius:26px"><div class="b" style="font-size:14px">Entra por mês</div><div class="big">${big(c.income)}</div></div>
   <section class="col"><h2>Entradas</h2>
     ${S.incomes.map(x => `<div class="c r row"><div class="b">${esc(x.name)}</div><div class="rt"><strong class="pos">${brl(x.value)}</strong>${delBtn('incomes', x.id, x.name)}</div></div>`).join('') || '<div class="empty">Nenhuma entrada ainda.</div>'}
     <details class="c add"><summary>Adicionar entrada</summary><form data-f="inc"><div class="two"><div><label for="in1">De onde veio?</label><input id="in1" class="in" name="n" placeholder="Salário" required></div><div><label for="in2">Quanto?</label><input id="in2" class="in" name="v" inputmode="decimal" placeholder="3.800,00" required></div></div><button class="pb">Adicionar entrada</button></form></details>
@@ -164,6 +183,10 @@ function vContas(c) {
   </section>`;
 }
 
+const vMetas = () => `
+  <div><h1>Metas</h1><span class="m">Cofrinhos para os seus sonhos</span></div>
+  ${S.goals.map(g => { const p = g.target ? Math.min(100, g.saved / g.target * 100) : 0; return `<div class="c col"><div class="r"><div><div class="b">${esc(g.name)}</div><div class="m">${brl(g.saved)} de ${brl(g.target)} · ${Math.round(p)}%</div></div><div class="rt"><button class="paid" data-act="gdep" data-id="${g.id}">Guardar</button>${delBtn('goals', g.id, g.name)}</div></div><div class="t"><i style="width:${p}%"></i></div></div>`; }).join('') || '<div class="empty">Nenhuma meta ainda. Crie a primeira abaixo.</div>'}
+  <details class="c add" open><summary>Nova meta</summary><form data-f="goal"><label for="g1">Nome</label><input id="g1" class="in" name="n" placeholder="Viagem" required><label for="g2">Valor da meta</label><input id="g2" class="in" name="v" inputmode="decimal" placeholder="5.000,00" required><button class="pb">Criar meta</button></form></details>`;
 const fld = (id, l, n, type, ph, ac) => `<label for="${id}">${l}</label><input id="${id}" class="in" name="${n}" type="${type}" placeholder="${ph}" autocomplete="${ac}" required${n === 'p' ? ' minlength="6"' : ''}>`;
 const vAuth = () => `
   <section class="auth"><div class="pig">${pig(false, 0.6, true)}<h1>Porquinho Financeiro</h1><p class="m">Anote o que você gasta e veja quanto ainda pode gastar. Sua conta guarda tudo, em qualquer aparelho.</p></div>
@@ -176,10 +199,16 @@ const vAuth = () => `
   </div></section>`;
 const vConta = () => `
   <div><h1>Minha conta</h1><span class="m" id="sync">${CLOUD ? status : 'Modo local: os dados ficam só neste aparelho'}</span></div>
-  ${CLOUD && user ? `<div class="c r"><span class="av" style="background:#FBD9E1">${esc((user.displayName || user.email || '?')[0].toUpperCase())}</span><div style="flex:1;min-width:0"><div class="b">${esc(user.displayName || 'Sem nome')}</div><div class="m">${esc(user.email || '')}</div></div></div>
+  ${CLOUD && user ? `<div class="c r"><span class="av" style="background:var(--soft)">${esc((user.displayName || user.email || '?')[0].toUpperCase())}</span><div style="flex:1;min-width:0"><div class="b">${esc(user.displayName || 'Sem nome')}</div><div class="m">${esc(user.email || '')}</div></div></div>
   <details class="c add"><summary>Mudar meu nome</summary><form data-f="name"><label for="nm">Nome</label><input id="nm" class="in" name="n" value="${esc(user.displayName || '')}" required><button class="pb">Salvar nome</button></form></details>
   <button class="paid" data-act="resetpw">Redefinir senha por e-mail</button>` : ''}
+  <div class="c col"><h2>Categorias</h2><div class="m">${CATS.join(', ')}</div>
+    ${S.cats.map(x => `<div class="r"><span class="b">${esc(x)}</span><button class="x" data-act="delcat" data-t="${esc(x)}" aria-label="Excluir categoria ${esc(x)}">Excluir</button></div>`).join('')}
+    <form data-f="cat"><label for="nc">Nova categoria</label><input id="nc" class="in" name="n" placeholder="Pets" maxlength="20" required><button class="pb">Adicionar categoria</button></form></div>
+  <div class="c col"><h2>Tema</h2><div class="themes">${Object.entries(THEMES).map(([k, v]) => `<button class="th ${k === theme ? 'on' : ''}" data-act="theme" data-t="${k}" aria-pressed="${k === theme}"><span class="sw" style="background:${v[1]}"></span>${v[0]}</button>`).join('')}</div></div>
   <button class="lnk" data-act="export">Baixar backup dos dados</button>
+  <button class="lnk" data-act="csv">Baixar gastos em planilha (CSV)</button>
+  <button class="lnk" data-act="import">Restaurar backup</button><input type="file" id="imp" accept="application/json,.json" hidden>
   ${CLOUD ? '<button class="pb" data-act="logout">Sair da conta</button>' : ''}`;
 
 function render() {
@@ -187,7 +216,7 @@ function render() {
   if (CLOUD && !user) { $('#app').className = 'narrow'; $('#app').innerHTML = !fb ? '<div class="empty">Carregando…</div>' : vAuth(); return; }
   const c = calc();
   $('#app').className = tab === 'inicio' ? '' : 'narrow';
-  $('#app').innerHTML = tab === 'inicio' ? vInicio(c) : tab === 'mes' ? vMes(c) : tab === 'conta' ? vConta() : vContas(c);
+  $('#app').innerHTML = tab === 'inicio' ? vInicio(c) : tab === 'mes' ? vMes(calc(off)) : tab === 'metas' ? vMetas() : tab === 'conta' ? vConta() : vContas(c);
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
 }
 
@@ -197,6 +226,24 @@ document.addEventListener('click', e => {
   const { act, k, id, t } = b.dataset;
   if (act === 'tab') { tab = t; window.scrollTo(0, 0); }
   else if (act === 'am') authMode = t;
+  else if (act === 'moff') off = Math.min(0, off + Number(t));
+  else if (act === 'theme') setTheme(t);
+  else if (act === 'delcat') {
+    if (S.exp.some(e => e.cat === t) || S.budgets.some(x => x.cat === t)) { say('Essa categoria já tem gastos ou orçamento.'); return; }
+    S.cats = S.cats.filter(x => x !== t); save();
+  }
+  else if (act === 'import') { $('#imp').click(); return; }
+  else if (act === 'csv') {
+    const q = s => '"' + String(s).replace(/"/g, '""') + '"';
+    const rows = [['Data', 'Categoria', 'Descrição', 'Valor'], ...[...S.exp].sort((x, y) => x.date.localeCompare(y.date)).map(e => [e.date, e.cat, e.desc, String(e.value).replace('.', ',')])];
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + rows.map(r => r.map(q).join(';')).join('\n')], { type: 'text/csv;charset=utf-8' }));
+    a.download = 'porquinho-gastos.csv'; a.click(); return;
+  }
+  else if (act === 'gdep') {
+    const g = S.goals.find(x => x.id === id), v = num(prompt('Quanto quer guardar? (use - para retirar)') || '');
+    if (g && v) { g.saved = Math.max(0, g.saved + v); save(); }
+  }
   else if (act === 'google') { fb.signInWithPopup(fb.auth, new fb.GoogleAuthProvider()).catch(x => say(errMsg(x.code))); return; }
   else if (act === 'logout') { tab = 'inicio'; fb.signOut(fb.auth); return; }
   else if (act === 'resetpw') { fb.sendPasswordResetEmail(fb.auth, user.email).then(() => say('Enviamos um e-mail para redefinir a senha.')).catch(x => say(errMsg(x.code))); return; }
@@ -214,18 +261,38 @@ document.addEventListener('submit', e => {
   e.preventDefault();
   const f = e.target, d = Object.fromEntries(new FormData(f)), v = num(d.v), now = new Date();
   if (AUTH[f.dataset.f]) return AUTH[f.dataset.f](d);
+  if (f.dataset.f === 'cat') {
+    const n = d.n.replace(/[.#$\[\]\/]/g, '').trim();
+    if (!n || cats().includes(n)) { say('Nome inválido ou já existe.'); return; }
+    S.cats.push(n); save(); render(); say('Categoria adicionada.'); return;
+  }
   if (v <= 0) return;
   const kind = f.dataset.f;
   if (kind === 'exp') drop = true;
-  if (kind === 'exp') S.exp.push({ id: uid(), date: dkey(now), desc: d.d.trim() || 'Gasto', value: v, cat: d.c });
+  if (kind === 'exp') S.exp.push({ id: uid(), date: d.dt || dkey(now), desc: d.d.trim() || 'Gasto', value: v, cat: d.c });
   if (kind === 'inc') S.incomes.push({ id: uid(), name: d.n.trim(), value: v });
+  if (kind === 'bud') { const b = S.budgets.find(x => x.cat === d.c); if (b) b.value = v; else S.budgets.push({ id: uid(), cat: d.c, value: v }); }
+  if (kind === 'goal') S.goals.push({ id: uid(), name: d.n.trim(), target: v, saved: 0 });
   if (kind === 'fix') S.fixed.push({ id: uid(), name: d.n.trim(), value: v, day: Math.min(31, Math.max(1, parseInt(d.day) || 1)), paid: {} });
   if (kind === 'inst') {
     const total = Math.max(1, parseInt(d.t) || 1), cur = Math.min(total, Math.max(1, parseInt(d.cur) || 1));
     S.inst.push({ id: uid(), name: d.n.trim(), value: v, total, start: mkey(new Date(now.getFullYear(), now.getMonth() - (cur - 1), 1)), paid: {} });
   }
   save(); render();
-  say({ exp: 'Gasto lançado.', inc: 'Entrada adicionada.', fix: 'Gasto fixo adicionado.', inst: 'Parcelamento adicionado.' }[kind]);
+  say({ exp: 'Gasto lançado.', inc: 'Entrada adicionada.', fix: 'Gasto fixo adicionado.', inst: 'Parcelamento adicionado.', goal: 'Meta criada.', bud: 'Orçamento salvo.' }[kind]);
+});
+
+document.addEventListener('change', e => {
+  if (e.target.id !== 'imp' || !e.target.files[0]) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const n = norm(JSON.parse(r.result));
+      if (!confirm('Isso substitui os dados atuais pelos do backup. Continuar?')) return;
+      S = n; save(); render(); say('Backup restaurado.');
+    } catch (x) { say('Arquivo de backup inválido.'); }
+  };
+  r.readAsText(e.target.files[0]);
 });
 
 async function boot() {
