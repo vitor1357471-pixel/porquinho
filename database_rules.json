@@ -7,9 +7,17 @@
       }
     },
     "subscriptions": {
+      ".read": "auth != null && auth.uid === 'SEU_UID_AQUI'",
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
-        ".write": false
+        ".write": "auth != null && auth.uid === 'SEU_UID_AQUI'"
+      }
+    },
+    "pedidos": {
+      ".read": "auth != null && auth.uid === 'SEU_UID_AQUI'",
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && (auth.uid === $uid || auth.uid === 'SEU_UID_AQUI')"
       }
     }
   }
