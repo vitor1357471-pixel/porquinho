@@ -1,4 +1,5 @@
 import { firebaseConfig } from './firebase-config.js';
+import { PIX, ADMIN_UID } from './pix-config.js';
 const $ = s => document.querySelector(s);
 const brl = n => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -190,19 +191,43 @@ const vMetas = () => `
 const PLANOS = { mensal: ['Mensal', 14.9, 1], semestral: ['Semestral', 71.4, 6], anual: ['Anual', 106.8, 12] };
 const hasAccess = () => admin || (sub && sub.ate > Date.now()) || (user.metadata && Date.parse(user.metadata.creationTime) + 7 * 864e5 > Date.now());
 const vPlanos = () => pix && pix !== 'load' ? `
-  <div class="auth"><div class="c col" style="align-items:center;text-align:center"><h1>Pague com Pix</h1><span class="m">Abra o app do seu banco, escolha Pix e leia o QR Code.</span>
-  <img src="data:image/png;base64,${pix.b64}" alt="QR Code do Pix" width="220" height="220"><button class="pb" data-act="copy">Copiar código Pix</button>
-  <span class="m">Aguardando o pagamento. A tela atualiza sozinha.</span><button class="lnk" data-act="cancelpix">Escolher outro plano</button></div></div>` : `
+  <div class="auth"><div class="c col" style="align-items:center;text-align:center"><h1>Pague com Pix</h1><span class="m">Valor: ${brl(PLANOS[pix.plano][1])}. Abra o app do banco, escolha Pix e leia o QR Code.</span>
+  <img src="data:image/png;base64,${pix.b64}" alt="QR Code do Pix" width="220" height="220"><button class="pb" data-act="copy">Copiar código Pix</button><button class="paid" data-act="paguei">Já paguei</button>
+  <span class="m">Depois de pagar, toque em Já paguei. O acesso libera assim que o pagamento for confirmado.</span><button class="lnk" data-act="cancelpix">Escolher outro plano</button></div></div>` : `
   <div class="auth"><div class="pig" style="padding:22px"><h1>Continue com o seu porquinho</h1><p class="m">Seu período de acesso terminou. Escolha um plano e pague com Pix.</p></div>
   ${Object.entries(PLANOS).map(([k, [n, p, m]]) => `<div class="c r"><div><div class="b">${n}</div><div class="m">${brl(p / m)}/mês${m > 1 ? ' · ' + brl(p) + ' a cada ' + m + ' meses' : ''}</div></div><button class="paid" data-act="buy" data-t="${k}" ${pix === 'load' ? 'disabled' : ''}>Pagar com Pix</button></div>`).join('')}
   <button class="lnk" data-act="logout">Sair da conta</button></div>`;
+const emv = (id, v) => id + String(v.length).padStart(2, '0') + v;
+const crc16 = s => { let c = 0xFFFF; for (let i = 0; i < s.length; i++) { c ^= s.charCodeAt(i) << 8; for (let j = 0; j < 8; j++) c = c & 0x8000 ? ((c << 1) ^ 0x1021) & 0xFFFF : (c << 1) & 0xFFFF; } return c.toString(16).toUpperCase().padStart(4, '0'); };
+const limpa = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9 ]/g, '').toUpperCase();
+const pixPayload = valor => {
+  const p = emv('00', '01') + emv('01', '11') + emv('26', emv('00', 'br.gov.bcb.pix') + emv('01', PIX.chave)) + emv('52', '0000') + emv('53', '986') + emv('54', valor.toFixed(2)) + emv('58', 'BR') + emv('59', limpa(PIX.nome).slice(0, 25)) + emv('60', limpa(PIX.cidade).slice(0, 15)) + emv('62', emv('05', '***')) + '6304';
+  return p + crc16(p);
+};
+async function loadAdm() {
+  try {
+    const [s, p] = await Promise.all([fb.get(fb.ref(fb.db, 'subscriptions')), fb.get(fb.ref(fb.db, 'pedidos'))]);
+    const subs = Object.entries(s.val() || {}).map(([uid, v]) => ({ uid, ...v })), now = Date.now(), at = subs.filter(x => x.ate > now && PLANOS[x.plano]);
+    ADM = { ativos: at.length, mrr: sum(at, x => PLANOS[x.plano][1] / PLANOS[x.plano][2]), lista: subs.sort((x, y) => y.ate - x.ate), pedidos: Object.entries(p.val() || {}).map(([uid, v]) => ({ uid, ...v })) };
+  } catch (e) { ADM = { ativos: 0, mrr: 0, lista: [], pedidos: [] }; }
+}
+async function aprovar(uid) {
+  const o = ADM.pedidos.find(x => x.uid === uid), cur = ADM.lista.find(x => x.uid === uid);
+  if (!o || !PLANOS[o.plano]) return;
+  const d = new Date(Math.max(Date.now(), (cur && cur.ate) || 0)); d.setMonth(d.getMonth() + PLANOS[o.plano][2]);
+  try {
+    await fb.set(fb.ref(fb.db, `subscriptions/${uid}`), { plano: o.plano, ate: d.getTime(), email: o.email || '' });
+    await fb.remove(fb.ref(fb.db, `pedidos/${uid}`));
+    await loadAdm(); render(); say('Assinatura liberada.');
+  } catch (e) { say('Não foi possível liberar. Confira as regras do banco.'); }
+}
 async function buy(plano) {
   pix = 'load'; render();
   try {
-    const r = await fetch('/api/criar-pix', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await user.getIdToken() }, body: JSON.stringify({ plano }) });
-    const j = await r.json();
-    if (!j.qr) throw new Error('pix');
-    pix = j; render();
+    const payload = pixPayload(PLANOS[plano][1]);
+    const m = await import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm');
+    const url = await (m.default || m).toDataURL(payload, { width: 240, margin: 1 });
+    pix = { qr: payload, b64: url.split(',')[1], plano }; render();
     clearInterval(buy.t);
     buy.t = setInterval(async () => {
       try {
@@ -210,12 +235,13 @@ async function buy(plano) {
         if (s && s.ate > Date.now()) { sub = s; pix = null; clearInterval(buy.t); render(); say('Pagamento confirmado! Obrigado.'); }
       } catch (e) { /* tenta de novo */ }
     }, 5000);
-  } catch (e) { pix = null; render(); say('Não foi possível gerar o Pix. Tente de novo.'); }
+  } catch (e) { pix = null; render(); say('Não foi possível gerar o QR Code. Tente de novo.'); }
 }
 const vAdmin = () => `
-  <div><h1>Administrador</h1><span class="m">Assinaturas pagas via Pix</span></div>
+  <div class="r"><div><h1>Administrador</h1><span class="m">Assinaturas pagas via Pix</span></div><button class="lnk" data-act="admref">Atualizar</button></div>
   <div style="display:flex;gap:10px">${tile('Receita mensal', ADM.mrr, 'pos')}<div class="c" style="flex:1;padding:12px 14px;border-radius:18px"><div class="m">Assinantes ativos</div><div class="b" style="font-size:19px;font-weight:800">${ADM.ativos}</div></div></div>
-  <section class="col"><h2>Assinantes</h2>${ADM.lista.map(s => `<div class="c r row"><div><div class="b">${esc(s.email || 'Sem e-mail')}</div><div class="m">${esc(PLANOS[s.plano] ? PLANOS[s.plano][0] : s.plano)} · até ${new Date(s.ate).toLocaleDateString('pt-BR')}</div></div><span class="chip ${s.ate > Date.now() ? '' : 'warn'}">${s.ate > Date.now() ? 'Ativo' : 'Vencido'}</span></div>`).join('') || '<div class="empty">Nenhum assinante ainda.</div>'}</section>`;
+  <section class="col"><h2>Pagamentos para confirmar</h2>${ADM.pedidos.map(o => `<div class="c row"><div class="r"><div><div class="b">${esc(o.email || o.uid)}</div><div class="m">${esc(PLANOS[o.plano] ? PLANOS[o.plano][0] + ' · ' + brl(PLANOS[o.plano][1]) : o.plano)}</div></div><div class="rt"><button class="paid" data-act="aprovar" data-id="${esc(o.uid)}">Confirmar</button><button class="x" data-act="recusar" data-id="${esc(o.uid)}">Recusar</button></div></div></div>`).join('') || '<div class="empty">Nenhum pagamento aguardando.</div>'}</section>
+  <section class="col"><h2>Assinantes</h2>${ADM.lista.map(s => `<div class="c r row"><div><div class="b">${esc(s.email || s.uid)}</div><div class="m">${esc(PLANOS[s.plano] ? PLANOS[s.plano][0] : s.plano)} · até ${new Date(s.ate).toLocaleDateString('pt-BR')}</div></div><span class="chip ${s.ate > Date.now() ? '' : 'warn'}">${s.ate > Date.now() ? 'Ativo' : 'Vencido'}</span></div>`).join('') || '<div class="empty">Nenhum assinante ainda.</div>'}</section>`;
 const fld = (id, l, n, type, ph, ac) => `<label for="${id}">${l}</label><input id="${id}" class="in" name="${n}" type="${type}" placeholder="${ph}" autocomplete="${ac}" required${n === 'p' ? ' minlength="6"' : ''}>`;
 const vAuth = () => `
   <section class="auth"><div class="pig">${pig(false, 0.6, true)}<h1>Porquinho Financeiro</h1><p class="m">Anote o que você gasta e veja quanto ainda pode gastar. Sua conta guarda tudo, em qualquer aparelho.</p></div>
@@ -259,6 +285,13 @@ document.addEventListener('click', e => {
   else if (act === 'am') authMode = t;
   else if (act === 'buy') { buy(t); return; }
   else if (act === 'copy') { navigator.clipboard.writeText(pix.qr).then(() => say('Código Pix copiado.')); return; }
+  else if (act === 'paguei') {
+    fb.set(fb.ref(fb.db, `pedidos/${user.uid}`), { plano: pix.plano, email: user.email || '', em: Date.now() }).then(() => say('Pedido enviado! O acesso libera quando o pagamento for confirmado.')).catch(() => say('Não foi possível enviar. Tente de novo.'));
+    return;
+  }
+  else if (act === 'aprovar') { aprovar(id); return; }
+  else if (act === 'recusar') { fb.remove(fb.ref(fb.db, `pedidos/${id}`)).then(loadAdm).then(render); return; }
+  else if (act === 'admref') { loadAdm().then(render); return; }
   else if (act === 'cancelpix') { pix = null; clearInterval(buy.t); }
   else if (act === 'moff') off = Math.min(0, off + Number(t));
   else if (act === 'theme') setTheme(t);
@@ -347,10 +380,8 @@ async function boot() {
     sub = null; admin = false; ADM = null; pix = null;
     if (u) {
       try { sub = (await fb.get(fb.ref(fb.db, `subscriptions/${u.uid}`))).val(); } catch (e) { /* sem assinatura */ }
-      try {
-        const r = await fetch('/api/admin', { headers: { Authorization: 'Bearer ' + await u.getIdToken() } });
-        if (r.ok) { ADM = await r.json(); admin = true; }
-      } catch (e) { /* não é admin */ }
+      admin = u.uid === ADMIN_UID;
+      if (admin) await loadAdm();
     }
     render();
   });
